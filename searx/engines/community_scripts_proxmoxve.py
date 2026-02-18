@@ -122,7 +122,28 @@ def init(engine_settings: dict[str, t.Any]) -> bool:  # pylint: disable=unused-a
     return True
 
 
-def search(query: str, params: "RequestParams") -> EngineResults:
+def _score_script(script: dict[str, t.Any], words: list[str]) -> int:
+    """Score a script against query words.  Returns 0 if any word is missing (AND logic)."""
+
+    score = 0
+    name_lower = script["name"].lower()
+    desc_lower = script["description"].lower()
+
+    for word in words:
+        found = False
+        if word in name_lower:
+            score += 10
+            found = True
+        if word in desc_lower:
+            score += 5
+            found = True
+        if not found:
+            return 0
+
+    return score
+
+
+def search(query: str, params: "RequestParams") -> EngineResults:  # pylint: disable=unused-argument
     """Search the cached script catalogue and return scored results.
 
     Each query word is matched against script names (+10) and descriptions (+5).
@@ -143,31 +164,7 @@ def search(query: str, params: "RequestParams") -> EngineResults:
             return res
 
     words = query.lower().split()
-    if not words:
-        return res
-
-    scored: list[tuple[int, dict[str, t.Any]]] = []
-
-    for script in scripts:
-        score = 0
-        name_lower = script["name"].lower()
-        desc_lower = script["description"].lower()
-
-        for word in words:
-            found = False
-            if word in name_lower:
-                score += 10
-                found = True
-            if word in desc_lower:
-                score += 5
-                found = True
-            if not found:
-                score = 0
-                break
-
-        if score > 0:
-            scored.append((score, script))
-
+    scored = [(s, script) for script in scripts if (s := _score_script(script, words)) > 0]
     scored.sort(key=lambda x: x[0], reverse=True)
 
     for _score, script in scored[:_MAX_RESULTS]:
