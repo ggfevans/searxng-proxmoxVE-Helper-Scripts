@@ -1,0 +1,9 @@
+# Add this block to /etc/searxng/settings.yml under the `engines:` list.
+# For upstream: insert alphabetically among other engines.
+# For personal use: set `disabled: false` to enable by default.
+
+  - name: proxmox ve community scripts
+    engine: community_scripts_proxmoxve
+    shortcut: pve
+    categories: [it]
+    disabled: true
