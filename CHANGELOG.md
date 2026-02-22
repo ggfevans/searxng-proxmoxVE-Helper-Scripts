@@ -1,0 +1,33 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- Unit tests mocking network errors and status codes.
+- Comprehensive unit tests covering malformed payloads, trimming/deduplication, and partial-cache resilience.
+- Manual data analysis script in `tools/analyze_api.py` for live API inspection.
+- Support for `hmac_secret_key` in engine configuration and environment variables.
+
+### Changed
+- Switched networking from `urllib.request` to shared `searx.network.get` (httpx-style).
+- Hardened payload validation (top-level list requirement, strict type checking for categories and scripts).
+- Improved slug normalization using a new `_slugify` helper (NFKD normalization, lowercase, special character removal).
+- Implemented slug collision handling using numeric suffixes (e.g., `slug-1`).
+- Migrated from a single-blob cache to individual per-script cache entries.
+- Switched cache serialization from `pickle` to compressed JSON (zlib level 6).
+- Truncated script descriptions to 500 characters to optimize cache utilization within the 10 KB limit.
+- Enhanced logging with informative warnings for malformed upstream data and cache failures.
+- Refactored `setup()` to use a secure "load-or-generate" flow for per-instance HMAC keys.
+
+### Fixed
+- Logic error where disabled scripts reserved slugs and caused unnecessary renaming of enabled scripts.
+
+### Security
+- Replaced `pickle` with `json` for cache serialization to eliminate potential deserialization vulnerabilities.
+- Added HMAC-based integrity protection for all cached script data.
+- Configured `.gitignore` to prevent the instance-local `.hmac_secret` from being committed.
