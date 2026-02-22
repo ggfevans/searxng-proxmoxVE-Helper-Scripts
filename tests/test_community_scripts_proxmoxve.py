@@ -296,6 +296,11 @@ class CommunityScriptsSchemaHardeningTests(CommunityScriptsTestBase):
                     "slug": "dup",
                     "description": "",
                 },
+                {
+                    "name": "Dup Duplicate",
+                    "slug": "dup-1",
+                    "description": "",
+                },
             ],
         )
 

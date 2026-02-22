@@ -27,33 +27,24 @@ Implementations
 """
 
 import hashlib
-
 import hmac
-
-import pickle
-
+import json
+import re
 import typing as t
-
+import unicodedata
 import zlib
-
-
 
 from httpx import HTTPError, TimeoutException
 
-
-
 from searx import logger
-
 from searx.enginelib import EngineCache
-
 from searx.network import get
-
 from searx.result_types import EngineResults
 
 if t.TYPE_CHECKING:
     from searx.search.processors import RequestParams
 
-engine_type = "offline"  # query never leaves the instance; we fetch bulk data and search locally
+engine_type = "offline"
 categories = ["it"]
 disabled = True
 paging = False
@@ -69,16 +60,23 @@ about = {
 }
 
 _SCRIPT_URL = "https://community-scripts.github.io/ProxmoxVE/scripts?id={slug}"
-_CACHE_TTL = 43200  # 12 hours in seconds
+_CACHE_TTL = 43200
 _MAX_RESULTS = 20
-_MAX_CACHE_VALUE_LEN = 10240  # 10 KB
-_HMAC_SECRET_KEY = b'a-secure-secret-key-for-hmac'
+_MAX_CACHE_VALUE_LEN = 10240
 
 _logger = logger.getChild("community_scripts_proxmoxve")
 
+_HMAC_SECRET_KEY: t.Optional[bytes] = None
 CACHE: EngineCache
-"""Persistent (SQLite) key/value cache that stores the fetched script catalogue."""
 
+def _slugify(value, max_len=64):
+    """Normalizes a string to a slug."""
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = re.sub(r"-{2,}", "-", value).strip("-")
+    return value[:max_len]
 
 def _fetch_scripts() -> list[dict[str, t.Any]]:
     """Fetch all scripts from the community-scripts API and return a flat, deduplicated list."""
@@ -98,99 +96,89 @@ def _fetch_scripts() -> list[dict[str, t.Any]]:
 
     seen: set[str] = set()
     scripts: list[dict[str, t.Any]] = []
-
-    for category_index, category in enumerate(data):
+    for category in data:
         if not isinstance(category, dict):
-            _logger.warning("Skipping malformed category at index %d", category_index)
+            _logger.warning("Skipping malformed category")
             continue
-
         category_scripts = category.get("scripts", [])
         if not isinstance(category_scripts, list):
-            _logger.warning("Skipping malformed scripts list in category index %d", category_index)
+            _logger.warning("Skipping malformed scripts list in category")
             continue
-
-        for script_index, script in enumerate(category_scripts):
+        for script in category_scripts:
             if not isinstance(script, dict):
-                _logger.warning(
-                    "Skipping malformed script at category %d index %d",
-                    category_index,
-                    script_index,
-                )
+                _logger.warning("Skipping malformed script")
                 continue
-
             name = script.get("name")
             slug = script.get("slug")
             if not isinstance(name, str) or not isinstance(slug, str):
                 _logger.warning(
-                    "Skipping script with invalid name/slug at category %d index %d: name=%r slug=%r",
-                    category_index,
-                    script_index,
+                    "Skipping script with invalid name/slug: name=%r slug=%r",
                     name,
                     slug,
                 )
                 continue
-
-            name = name.strip()
-            slug = slug.strip()
+            
+            slug = _slugify(slug)
             if not name or not slug:
                 continue
+            
+            original_slug = slug
+            counter = 1
+            while slug in seen:
+                slug = f"{original_slug}-{counter}"
+                counter += 1
+            
+            seen.add(slug)
+
             if script.get("disable") is True:
-                continue
-            if slug in seen:
                 continue
 
             description = script.get("description")
-            # Truncate description to 500 characters
             description = description[:500] if isinstance(description, str) else ""
-
-            seen.add(slug)
+            
             scripts.append(
-                {
-                    "name": name,
-                    "slug": slug,
-                    "description": description,
-                }
+                {"name": name.strip(), "slug": slug, "description": description}
             )
-
     return scripts
 
-
 def setup(engine_settings: dict[str, t.Any]) -> bool:
-    """Set up the engine: create the persistent cache.
-
-    For more details see :py:obj:`searx.enginelib.Engine.setup`.
-    """
-    global CACHE  # pylint: disable=global-statement
+    """Set up the engine: create the persistent cache and load HMAC key."""
+    global CACHE, _HMAC_SECRET_KEY
     CACHE = EngineCache(engine_settings["name"])
+    key = engine_settings.get("hmac_secret_key")
+    if key:
+        _HMAC_SECRET_KEY = key if isinstance(key, bytes) else key.encode("utf-8")
+    else:
+        _logger.warning(
+            "No hmac_secret_key provided for Proxmox VE engine; cached signatures are disabled."
+        )
+        _HMAC_SECRET_KEY = None
     return True
 
-
 def _serialize_script(script: dict[str, t.Any]) -> bytes:
-    """Serializes, compresses and signs a script dictionary."""
-    serialized_script = pickle.dumps(script)
-    compressed_script = zlib.compress(serialized_script, level=zlib.Z_BEST_COMPRESSION)
+    """Serializes, compresses and signs a script dictionary using JSON."""
+    payload = json.dumps(script, ensure_ascii=False).encode("utf-8")
+    compressed = zlib.compress(payload, level=6) # Use balanced compression
     
-    # Create HMAC
-    mac = hmac.new(_HMAC_SECRET_KEY, compressed_script, hashlib.sha256).digest()
-    
-    return mac + compressed_script
+    if _HMAC_SECRET_KEY:
+        mac = hmac.new(_HMAC_SECRET_KEY, compressed, hashlib.sha256).digest()
+        return mac + compressed
+    return compressed
 
 def _deserialize_script(data: bytes) -> dict[str, t.Any]:
-    """Verifies, decompresses and deserializes a script."""
-    mac_size = hashlib.sha256().digest_size
-    mac = data[:mac_size]
-    compressed_script = data[mac_size:]
+    """Verifies, decompresses and deserializes a script using JSON."""
+    if _HMAC_SECRET_KEY:
+        mac_size = hashlib.sha256().digest_size
+        mac, compressed = data[:mac_size], data[mac_size:]
+        
+        expected_mac = hmac.new(_HMAC_SECRET_KEY, compressed, hashlib.sha256).digest()
+        if not hmac.compare_digest(mac, expected_mac):
+            raise ValueError("HMAC verification failed")
+    else:
+        compressed = data
 
-    # Verify HMAC
-    expected_mac = hmac.new(_HMAC_SECRET_KEY, compressed_script, hashlib.sha256).digest()
-    if not hmac.compare_digest(mac, expected_mac):
-        raise ValueError("HMAC verification failed")
-
-    # Decompress and deserialize
-    # The data is trusted, as it was serialized by this code and its integrity has been verified.
-    decompressed_script = zlib.decompress(compressed_script)
-    return pickle.loads(decompressed_script)
-
+    payload = zlib.decompress(compressed)
+    return json.loads(payload.decode("utf-8"))
 
 def _cache_scripts(scripts: list[dict[str, t.Any]]) -> None:
     """Serializes, compresses and caches each script individually."""
@@ -201,8 +189,6 @@ def _cache_scripts(scripts: list[dict[str, t.Any]]) -> None:
             _logger.warning("Skipping script with no slug: %s", script.get('name', 'unknown'))
             continue
         
-        slugs.append(slug)
-        
         signed_script = _serialize_script(script)
 
         if len(signed_script) > _MAX_CACHE_VALUE_LEN:
@@ -210,17 +196,13 @@ def _cache_scripts(scripts: list[dict[str, t.Any]]) -> None:
             continue
 
         CACHE.set(f"script_{slug}", signed_script, expire=_CACHE_TTL)
+        slugs.append(slug)
 
-    # Store the list of all slugs
     CACHE.set("script_slugs_list", slugs, expire=_CACHE_TTL)
     _logger.debug("Cached %d scripts individually.", len(slugs))
 
-
-def init(engine_settings: dict[str, t.Any]) -> bool:  # pylint: disable=unused-argument
-    """Pre-warm the cache by fetching the full script catalogue.
-
-    For more details see :py:obj:`searx.enginelib.Engine.init`.
-    """
+def init(engine_settings: dict[str, t.Any]) -> bool:
+    """Pre-warm the cache by fetching the full script catalogue."""
     scripts = _fetch_scripts()
     if not scripts:
         _logger.warning("No scripts fetched during init")
@@ -228,15 +210,13 @@ def init(engine_settings: dict[str, t.Any]) -> bool:  # pylint: disable=unused-a
 
     try:
         _cache_scripts(scripts)
-    except (pickle.PickleError, zlib.error) as e:
+    except (json.JSONDecodeError, zlib.error) as e:
         _logger.warning("Failed to serialize, compress and cache scripts: %s", e)
         return False
     return True
 
-
 def _score_script(script: dict[str, t.Any], words: list[str]) -> int:
     """Score a script against query words.  Returns 0 if any word is missing (AND logic)."""
-
     score = 0
     name_lower = script["name"].lower()
     desc_lower = script["description"].lower()
@@ -251,24 +231,16 @@ def _score_script(script: dict[str, t.Any], words: list[str]) -> int:
             found = True
         if not found:
             return 0
-
     return score
 
-
-def search(query: str, params: "RequestParams") -> EngineResults:  # pylint: disable=unused-argument
-    """Search the cached script catalogue and return scored results.
-
-    Each query word is matched against script names (+10) and descriptions (+5).
-    All words must match (AND logic).  Results are sorted by score and capped
-    at :py:obj:`_MAX_RESULTS`.
-    """
+def search(query: str, params: "RequestParams") -> EngineResults:
+    """Search the cached script catalogue and return scored results."""
     res = EngineResults()
 
     if not query or not query.strip():
         return res
 
     scripts = []
-    # Retrieve the list of all script slugs
     slugs_list = CACHE.get("script_slugs_list")
     
     if isinstance(slugs_list, list) and slugs_list:
@@ -281,7 +253,7 @@ def search(query: str, params: "RequestParams") -> EngineResults:  # pylint: dis
                 try:
                     script = _deserialize_script(cached_script)
                     temp_scripts.append(script)
-                except (ValueError, zlib.error, pickle.UnpicklingError) as e:
+                except (ValueError, zlib.error, json.JSONDecodeError) as e:
                     _logger.warning("Failed to deserialize script with slug %s: %s", slug, e)
                     missed_count += 1
             else:
@@ -295,18 +267,17 @@ def search(query: str, params: "RequestParams") -> EngineResults:  # pylint: dis
                  _logger.warning("Missed %d scripts from cache.", missed_count)
         else:
             _logger.warning("Failed to retrieve any scripts from cache. Re-fetching fresh data.")
-            scripts = [] # Ensure scripts is empty before re-fetch
+            scripts = []
 
-    if not scripts: # If scripts still empty after all cache attempts
+    if not scripts:
         scripts = _fetch_scripts()
         if scripts:
-            # Re-attempt individual script caching from search
             try:
                 _cache_scripts(scripts)
-            except (pickle.PickleError, zlib.error) as e:
+            except (json.JSONDecodeError, zlib.error) as e:
                 _logger.warning("Failed to serialize, compress and cache scripts from search: %s", e)
     
-    if not scripts: # Final check if scripts is empty
+    if not scripts:
         return res
 
     words = query.lower().split()
@@ -317,7 +288,6 @@ def search(query: str, params: "RequestParams") -> EngineResults:  # pylint: dis
         content = script["description"]
         if len(content) > 300:
             content = content[:300].rsplit(" ", 1)[0] + "..."
-
         res.add(
             res.types.MainResult(
                 url=_SCRIPT_URL.format(slug=script["slug"]),
@@ -325,5 +295,4 @@ def search(query: str, params: "RequestParams") -> EngineResults:  # pylint: dis
                 content=content,
             )
         )
-
     return res
