@@ -55,30 +55,12 @@ class DummyEngineResults:
 
 
 class FakeHTTPResponse:
-    def __init__(self, payload: object, status: int = 200) -> None:
+    def __init__(self, payload: object, status_code: int = 200) -> None:
         self.payload = payload
-        self.status = status
+        self.status_code = status_code
 
-    def read(self) -> bytes:
-        return json.dumps(self.payload).encode("utf-8")
-
-class FakeHTTPSConnection:
-    def __init__(self, payload: object, status: int = 200) -> None:
-        self._response = FakeHTTPResponse(payload, status=status)
-        self.request_calls: list[tuple[str, str]] = []
-
-    def request(self, method: str, path: str) -> None:
-        self.request_calls.append((method, path))
-
-    def getresponse(self) -> FakeHTTPResponse:
-        return self._response
-
-    def __enter__(self) -> "FakeHTTPSConnection":
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
-        _ = (exc_type, exc, traceback)
-        return False
+    def json(self) -> object:
+        return self.payload
 
 
 def load_engine_module() -> tuple[types.ModuleType, DummyLogger]:
@@ -94,10 +76,14 @@ def load_engine_module() -> tuple[types.ModuleType, DummyLogger]:
     result_types_module = types.ModuleType("searx.result_types")
     result_types_module.EngineResults = DummyEngineResults
 
+    network_module = types.ModuleType("searx.network")
+    network_module.get = lambda url, timeout: FakeHTTPResponse([])
+
     module_overrides = {
         "searx": searx_module,
         "searx.enginelib": enginelib_module,
         "searx.result_types": result_types_module,
+        "searx.network": network_module,
     }
     original_modules = {key: sys.modules.get(key) for key in module_overrides}
     original_test_module = sys.modules.get(module_name)
@@ -125,19 +111,54 @@ def load_engine_module() -> tuple[types.ModuleType, DummyLogger]:
     return module, logger
 
 
+class CommunityScriptsNetworkTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module, self.logger = load_engine_module()
+
+    def _patch_network_get(self, payload: object, status_code: int = 200) -> mock._patch:
+        return mock.patch.object(
+            self.module,
+            "get",
+            return_value=FakeHTTPResponse(payload, status_code=status_code),
+        )
+
+    def test_fetch_scripts_success(self) -> None:
+        payload = [{"scripts": [{"name": "Test Script", "slug": "test-script"}]}]
+        with self._patch_network_get(payload):
+            scripts = self.module._fetch_scripts()
+        self.assertEqual(len(scripts), 1)
+        self.assertEqual(scripts[0]["name"], "Test Script")
+
+    def test_fetch_scripts_http_error(self) -> None:
+        with self._patch_network_get([], status_code=500):
+            scripts = self.module._fetch_scripts()
+        self.assertEqual(scripts, [])
+        self.assertTrue(
+            any("Unexpected community scripts API status" in msg for _, msg in self.logger.messages)
+        )
+
+    def test_fetch_scripts_exception(self) -> None:
+        with mock.patch.object(self.module, "get", side_effect=Exception("Network Error")):
+            scripts = self.module._fetch_scripts()
+        self.assertEqual(scripts, [])
+        self.assertTrue(
+            any("Failed to fetch community scripts" in msg for _, msg in self.logger.messages)
+        )
+
+
 class CommunityScriptsSchemaHardeningTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module, self.logger = load_engine_module()
 
-    def _patch_https_connection(self, payload: object, status: int = 200) -> mock._patch:
+    def _patch_network_get(self, payload: object, status_code: int = 200) -> mock._patch:
         return mock.patch.object(
-            self.module.http.client,
-            "HTTPSConnection",
-            return_value=FakeHTTPSConnection(payload, status=status),
+            self.module,
+            "get",
+            return_value=FakeHTTPResponse(payload, status_code=status_code),
         )
 
     def test_fetch_scripts_rejects_non_list_payload(self) -> None:
-        with self._patch_https_connection({"scripts": []}):
+        with self._patch_network_get({"scripts": []}):
             scripts = self.module._fetch_scripts()
 
         self.assertEqual(scripts, [])
@@ -153,7 +174,7 @@ class CommunityScriptsSchemaHardeningTests(unittest.TestCase):
             None,
             {"scripts": [{"name": "Valid Script", "slug": "valid-script"}]},
         ]
-        with self._patch_https_connection(payload):
+        with self._patch_network_get(payload):
             scripts = self.module._fetch_scripts()
 
         self.assertEqual(
@@ -174,7 +195,7 @@ class CommunityScriptsSchemaHardeningTests(unittest.TestCase):
         payload = [
             {"scripts": [1, "broken", {"name": "Valid Script", "slug": "valid-script"}]},
         ]
-        with self._patch_https_connection(payload):
+        with self._patch_network_get(payload):
             scripts = self.module._fetch_scripts()
 
         self.assertEqual(
@@ -195,7 +216,7 @@ class CommunityScriptsSchemaHardeningTests(unittest.TestCase):
         payload = [
             {"scripts": "not-a-list"},
         ]
-        with self._patch_https_connection(payload):
+        with self._patch_network_get(payload):
             scripts = self.module._fetch_scripts()
 
         self.assertEqual(scripts, [])
@@ -216,7 +237,7 @@ class CommunityScriptsSchemaHardeningTests(unittest.TestCase):
                 ]
             }
         ]
-        with self._patch_https_connection(payload):
+        with self._patch_network_get(payload):
             scripts = self.module._fetch_scripts()
 
         self.assertEqual(
@@ -248,7 +269,7 @@ class CommunityScriptsSchemaHardeningTests(unittest.TestCase):
                 ]
             }
         ]
-        with self._patch_https_connection(payload):
+        with self._patch_network_get(payload):
             scripts = self.module._fetch_scripts()
 
         self.assertEqual(
@@ -278,7 +299,7 @@ class CommunityScriptsSchemaHardeningTests(unittest.TestCase):
                 ]
             }
         ]
-        with self._patch_https_connection(payload):
+        with self._patch_network_get(payload):
             self.module.setup({"name": "proxmox ve community scripts"})
             initialized = self.module.init({})
 

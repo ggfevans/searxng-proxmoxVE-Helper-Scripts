@@ -26,12 +26,11 @@ Implementations
 
 """
 
-import http.client
-import json
 import typing as t
 
 from searx import logger
 from searx.enginelib import EngineCache
+from searx.network import get
 from searx.result_types import EngineResults
 
 if t.TYPE_CHECKING:
@@ -64,15 +63,12 @@ CACHE: EngineCache
 
 def _fetch_scripts() -> list[dict[str, t.Any]]:
     """Fetch all scripts from the community-scripts API and return a flat, deduplicated list."""
-
     try:
-        with http.client.HTTPSConnection("community-scripts.github.io", timeout=30) as connection:
-            connection.request("GET", "/ProxmoxVE/api/categories")
-            response = connection.getresponse()
-            if response.status != 200:
-                _logger.warning("Unexpected community scripts API status: %s", response.status)
-                return []
-            data = json.loads(response.read().decode())
+        resp = get("https://community-scripts.github.io/ProxmoxVE/api/categories", timeout=30)
+        if resp.status_code != 200:
+            _logger.warning("Unexpected community scripts API status: %s", resp.status_code)
+            return []
+        data = resp.json()
     except Exception as e:
         _logger.warning("Failed to fetch community scripts: %s", e)
         return []
