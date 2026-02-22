@@ -148,11 +148,10 @@ class CommunityScriptsSchemaHardeningTests(unittest.TestCase):
             )
         )
 
-    def test_fetch_scripts_skips_malformed_categories_and_scripts(self) -> None:
+    def test_fetch_scripts_skips_malformed_category_entries(self) -> None:
         payload = [
             None,
-            {"scripts": [1, "broken", {"name": "Valid Script", "slug": "valid-script"}]},
-            {"scripts": "not-a-list"},
+            {"scripts": [{"name": "Valid Script", "slug": "valid-script"}]},
         ]
         with self._patch_https_connection(payload):
             scripts = self.module._fetch_scripts()
@@ -170,8 +169,105 @@ class CommunityScriptsSchemaHardeningTests(unittest.TestCase):
         )
         warning_messages = [message for _level, message in self.logger.messages]
         self.assertTrue(any("Skipping malformed category" in msg for msg in warning_messages))
+
+    def test_fetch_scripts_skips_malformed_script_entries_within_category(self) -> None:
+        payload = [
+            {"scripts": [1, "broken", {"name": "Valid Script", "slug": "valid-script"}]},
+        ]
+        with self._patch_https_connection(payload):
+            scripts = self.module._fetch_scripts()
+
+        self.assertEqual(
+            scripts,
+            [
+                {
+                    "name": "Valid Script",
+                    "slug": "valid-script",
+                    "description": "",
+                    "type": "",
+                }
+            ],
+        )
+        warning_messages = [message for _level, message in self.logger.messages]
         self.assertTrue(any("Skipping malformed script" in msg for msg in warning_messages))
+
+    def test_fetch_scripts_skips_malformed_scripts_list_in_category(self) -> None:
+        payload = [
+            {"scripts": "not-a-list"},
+        ]
+        with self._patch_https_connection(payload):
+            scripts = self.module._fetch_scripts()
+
+        self.assertEqual(scripts, [])
+        warning_messages = [message for _level, message in self.logger.messages]
         self.assertTrue(any("Skipping malformed scripts list" in msg for msg in warning_messages))
+
+    def test_fetch_scripts_handles_scripts_with_invalid_or_missing_name_slug(self) -> None:
+        payload = [
+            {
+                "scripts": [
+                    {"name": None, "slug": "missing-name"},
+                    {"name": "Missing Slug"},
+                    {"name": 123, "slug": "numeric-name"},
+                    {"name": "Numeric Slug", "slug": 456},
+                    {"name": "", "slug": "empty-name"},
+                    {"name": "Empty Slug", "slug": ""},
+                    {"name": "Valid Script", "slug": "valid-script"},
+                ]
+            }
+        ]
+        with self._patch_https_connection(payload):
+            scripts = self.module._fetch_scripts()
+
+        self.assertEqual(
+            scripts,
+            [
+                {
+                    "name": "Valid Script",
+                    "slug": "valid-script",
+                    "description": "",
+                    "type": "",
+                }
+            ],
+        )
+        warning_messages = [message for _level, message in self.logger.messages]
+        self.assertTrue(
+            any(
+                "Skipping script with invalid name/slug" in msg
+                for msg in warning_messages
+            )
+        )
+
+    def test_fetch_scripts_strips_whitespace_from_name_and_slug(self) -> None:
+        payload = [
+            {
+                "scripts": [
+                    {"name": "  Whitespace Name  ", "slug": "  whitespace-slug  "},
+                    {"name": "Dup", "slug": "dup"},
+                    {"name": "Dup Duplicate", "slug": "  dup  "},
+                ]
+            }
+        ]
+        with self._patch_https_connection(payload):
+            scripts = self.module._fetch_scripts()
+
+        self.assertEqual(
+            scripts,
+            [
+                {
+                    "name": "Whitespace Name",
+                    "slug": "whitespace-slug",
+                    "description": "",
+                    "type": "",
+                },
+                {
+                    "name": "Dup",
+                    "slug": "dup",
+                    "description": "",
+                    "type": "",
+                },
+            ],
+        )
 
     def test_init_and_search_continue_with_partial_bad_data(self) -> None:
         payload = [
