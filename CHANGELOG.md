@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+and this project uses [Calendar Versioning](https://calver.org/) in `vYYYY-MM-DD` format.
 
 ## [Unreleased]
 
@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Switched versioning scheme from semver to CalVer (`vYYYY-MM-DD`).
 - Aligned `disabled` default guidance across engine docstring, `README.md`, and `settings-snippet.yml` with clear distinction between upstream (opt-in) and personal deployment use cases.
 - Rewrote `README.md` with a Features section emphasising SearXNG built-in infrastructure, compressed "How it works" to a single paragraph, and merged Usage/Verification into inline examples.
 - Polished `README.md`: corrected dependency claim, replaced HMAC bullet with cache resilience note, fixed "on first load" wording, removed internal lifecycle names, and merged split installation code block.
