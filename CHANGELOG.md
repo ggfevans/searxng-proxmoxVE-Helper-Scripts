@@ -60,3 +60,7 @@ and this project uses [Calendar Versioning](https://calver.org/) in `vYYYY-MM-DD
 - Configuration snippet (`settings-snippet.yml`) for easy integration.
 - Project documentation and screenshots.
 - AGPL-3.0 License.
+
+[Unreleased]: https://github.com/ggfevans/SearXNG-Community-Scripts-ProxmoxVE/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/ggfevans/SearXNG-Community-Scripts-ProxmoxVE/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/ggfevans/SearXNG-Community-Scripts-ProxmoxVE/releases/tag/v1.0.0
